@@ -1,39 +1,13 @@
 import pandas as pd
-from numpy import linspace, clip
+import numpy as np
 
 import models
 
 
-def interval_to_time(data, columns, n0, n1, oversampling_rate=10, time_key='t'):
-    df = pd.DataFrame(
-        {time_key: linspace(n0, n1, oversampling_rate * (n1 - n0) + 1)}
-    )
-    df.set_index(time_key, inplace=True)
+def islambda(func):
+    l0 = lambda: None
     
-    # Initialise the columns
-    for col in columns:
-        df.loc[:, col] = 0.0
-    
-    # Set the non-zero data elements
-    for ii, row in data.iterrows():
-        inds = (df.index >= row.start) & (df.index <= row.end)
-        
-        df.loc[inds, row['name']] = 1.0
-    
-    return df[columns]
-
-
-def load_dataframe(path, columns, index_col):
-    df = pd.read_csv(path)
-    
-    for col in columns:
-        if col not in df:
-            df.loc[:, col] = None
-    
-    df.set_index(index_col, inplace=True)
-    df = df.groupby(level=0).last()  # Remove duplicates
-    
-    return df[columns]
+    return isinstance(func, type(l0)) and func.__name__ == l0.__name__
 
 
 def get_or_create(model, keys, values=None):
@@ -65,12 +39,22 @@ def insert_data(sequence, view, df, force):
     ).execute()
     
     # Insert data
+    if isinstance(df, pd.DataFrame):
+        inds = df.index.tolist()
+        df = df.values.tolist()
+    
+    else:
+        inds = range(len(df))
+        
+        if isinstance(df, np.ndarray):
+            df = df.tolist()
+    
     rows = [dict(
         view=view,
         sequence=sequence,
-        t=tt,
-        x=rr.tolist()
-    ) for tt, rr in df.iterrows()]
+        i=ii,
+        x=rr
+    ) for ii, rr in zip(inds, df)]
     
     models.Data.insert_many(rows).execute()
 
@@ -92,25 +76,39 @@ def insert_labels(sequence, task, df, force):
         models.Labels.task == task
     ).execute()
     
+    if isinstance(df, pd.DataFrame):
+        inds = df.index.tolist()
+        df = df.values.tolist()
+    
+    else:
+        inds = range(len(df))
+        
+        if isinstance(df, np.ndarray):
+            df = df.tolist()
+    
     # Insert data
     rows = [dict(
         task=task,
         sequence=sequence,
-        t=tt,
-        y=rr.tolist()
-    ) for tt, rr in df.iterrows()]
+        i=ii,
+        y=rr
+    ) for ii, rr in zip(inds, df)]
     
     models.Labels.insert_many(rows).execute()
 
 
-def insert_predictions(config, task, partition, df):
+def insert_predictions(config, model, df):
     # Delete existing data
     models.Prediction.delete().where(
         models.Prediction.prediction_configuration == config
     ).execute()
-
+    
+    if hasattr(model, 'predict_proba'):
+        probs = model.predict_proba([row.x for ri, row in df.iterrows()])
+    else:
+        probs = model.predict([row.x for ri, row in df.iterrows()])
+    
     rows = [dict(prediction_configuration=config,
-            label=tt,
-            kind=rr.kind,
-            p=map(lambda pp: clip(pp, 1e-12, 1.0), rr.p)) for tt, rr in df.iterrows()]
+                 label=models.Labels.get(models.Labels.id == ii),
+                 p=pp) for (ii, rr), pp in zip(df.iterrows(), probs)]
     models.Prediction.insert_many(rows).execute()

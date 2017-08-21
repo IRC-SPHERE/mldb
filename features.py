@@ -1,39 +1,63 @@
 import pandas as pd
-
 import numpy as np
+
+from itertools import groupby
 
 from utils import get_or_create
 from models import *
 
 
-def parse_feature_type(d):
-    if isinstance(d, (list, tuple)):
-        return map(float, d)
+def check_type(d):
+    if isinstance(d, dict):
+        for kk in d.keys():
+            d[kk] = check_type(d[kk])
+        
+        return d
+    
+    elif isinstance(d, (list, tuple)):
+        return d
     
     elif isinstance(d, np.ndarray) and d.ndim == 1:
-        return d.astype(float).tolist()
+        if d.dtype in (float, int, np.float, np.int):
+            return d.astype(float).tolist()
+        
+        return d.tolist()
     
     elif isinstance(d, pd.Series):
-        return d.values.astype(float).tolist()
+        return check_type(d.todict())
     
-    elif isinstance(d, (int, float)):
-        return [float(d)]
+    elif isinstance(d, pd.DataFrame):
+        assert len(d) == 1
+        
+        return d.to_dict(orient='records')[0]
+    
+    elif isinstance(d, (int, float, np.float, np.int)):
+        return float(d)
+    
+    elif isinstance(d, (str, unicode)):
+        return d
     
     else:
-        raise ValueError(
-            'Returned feature type must be from the following set:' +
-            '\n\t[{}].'.format(', '.join(map(str, (list, tuple, np.ndarray, pd.Series, int, float)))) +
-            '\nYou provided: ' +
-            '\n\t{}'.format(type(d))
-        )
+        raise ValueError
 
 
-def _extract_features(task, view, sequence, func_name, func, left, right, do_update):
+# def parse_feature_type(d):
+#     return check_type(d)
+
+
+def _extract_features(task, view, sequence, func_name, func, left, right):
     function = get_or_create(
         Function,
         keys=dict(
-            task=task,
             name=func_name,
+        )
+    )
+    
+    function = get_or_create(
+        FunctionConfiguration,
+        keys=dict(
+            task=task,
+            function=function,
             left=left,
             right=right
         )
@@ -51,198 +75,270 @@ def _extract_features(task, view, sequence, func_name, func, left, right, do_upd
     
     df = pd.DataFrame(
         data=[dd.x for dd in data],
-        index=[dd.t for dd in data],
-        columns=view.columns
+        index=[dd.i for dd in data],
     )
-    df.index.name = 't' 
-
+    
     rows = []
     for label in labels:
-        inds = ((df.index > label.t + left) &
-                (df.index <= label.t + right))
+        inds = ((df.index > label.i + left) &
+                (df.index <= label.i + right))
         seq = df[inds]
+        
         f_of_x = func(seq)
-        f_of_x = parse_feature_type(f_of_x)
+        f_of_x_safe = check_type(f_of_x)
         
-        assert np.all(np.isfinite(f_of_x)), 'Extracted features contain NaNs, with\ndf=\n{}\n\nf(df) = {}'.format(
-            df[inds], f_of_x
-        )
+        assert np.all(np.isfinite(f_of_x)), \
+            'Extracted features contain NaNs, with\ndf=\n{}\n\nf(df) = {}'.format(
+                df[inds], f_of_x
+            )
         
-        if do_update:
-            Features.update(
-                x=f_of_x
-            ).where(
-                Features.label == label,
-                Features.function == function
-            ).execute()
-        
-        else:
-            rows.append(dict(
-                function=function,
-                label=label,
-                x=f_of_x
-            ))
+        rows.append(dict(
+            function_configuration=function,
+            label=label,
+            x=f_of_x_safe
+        ))
     
-    if not do_update:
-        Features.insert_many(rows).execute()
+    Features.insert_many(rows).execute()
 
 
-def extract_features(connection, task, view, func, func_name, left, right, force):
-    assert left < right;
+def identity(xx):
+    return xx
+
+
+def extract_features(connection, task=None, view=None, func=None, func_name=None, left=-1, right=0, force=False,
+                     singleton_feature_union=False):
+    if task is None:
+        task = 'default'
+    
+    if view is None:
+        view = 'default'
+    
+    if func is None:
+        func = identity
+    
+    if func_name is None:
+        func_name = func.__name__
+    
+    assert left < right
     
     task = connection.tasks[task]
     view = connection.views[view]
     
-    function = get_or_create(
+    base_func = get_or_create(
         Function,
-        keys=dict(
-            task=task,
-            name=func_name,
-            left=left,
-            right=right
-        )
+        keys={
+            'name': func_name,
+        }
+    )
+    
+    func_instance = get_or_create(
+        FunctionConfiguration,
+        keys={
+            'task': task,
+            'view': view,
+            'function': base_func,
+            'left': left,
+            'right': right,
+        }
     )
     
     num_features = Features.select().where(
-        Features.function == function
+        Features.function_configuration == func_instance
     ).count()
     
     num_labels = Labels.select().where(
         Labels.task == task
     ).count()
     
-    if not force:
-        if num_features == num_labels:
-            return
-    
-    do_update = num_features == num_labels
-    if num_features != num_labels:
+    do_computation = force or (num_features != num_labels)
+    if do_computation:
         Features.delete().where(
-            Features.function == function
+            Features.function_configuration == func_instance
         ).execute()
-    
-    for _, sequence in connection.itersequences():
-        print task, view, sequence, function
         
-        _extract_features(
+        for _, sequence in connection.itersequences():
+            print task, view, sequence, func_instance
+            
+            _extract_features(
+                task=task,
+                view=view,
+                sequence=sequence,
+                func_name=func_name,
+                func=func,
+                left=left,
+                right=right
+            )
+    
+    if singleton_feature_union:
+        FeatureUnion.create(
             task=task,
-            view=view,
-            sequence=sequence,
-            func_name=func_name,
-            func=func,
-            left=left,
-            right=right,
-            do_update=do_update
+            name=func_name,
+            function_ids=[func_instance.id]
         )
+    
+    return func_instance.id
 
 
-def load_training_data_y(feature_union_id, partition_name):
-    # Load base data
-    feature_union = FeatureUnion.get(FeatureUnion.id == feature_union_id)
-    task = feature_union.task
-    
-    partition = Partition.get(
-        Partition.task_id == task.id,
-        Partition.name == partition_name
-    )
-    
-    # Load labels
-    query = Labels.select(
-        Labels.id,
-        Sequence.name,
-        GroupDefinition.key,
-        Labels.t,
-        Labels.y
-    ).join(
-        GroupDefinition, on=(
-            (GroupDefinition.label_id == Labels.id) &
-            (GroupDefinition.partition_id == partition.id)
-        )
-    ).join(
-        Task, on=Labels.task_id == Task.id
-    ).join(
-        Sequence, on=Labels.sequence_id == Sequence.id
-    ).where(
-        Labels.task == task
-    ).tuples()
-    
-    rows = [list(row) for row in query]
-    for row in rows:
-        row[-1] = np.asarray(row[-1])
-    
-    df = pd.DataFrame(
-        [row[1:] for row in rows],
-        index=[row[0] for row in rows],
-        columns=('sequence', 'group', 't', 'y')
-    )
-    df.index.name = 'id'
-    
-    return df
+# def load_training_data_y(feature_union_id, partition_name):
+#     # Load base data
+#     feature_union = FeatureUnion.get(FeatureUnion.id == feature_union_id)
+#     task = feature_union.task
+#
+#     partition = Partition.get(
+#         Partition.task_id == task.id,
+#         Partition.name == partition_name
+#     )
+#
+#     # Load labels
+#     query = Labels.select(
+#         Labels.id,
+#         Sequence.name,
+#         Groups.key,
+#         Labels.i,
+#         Labels.y
+#     ).join(
+#         Groups, on=(
+#             (Groups.label_id == Labels.id) &
+#             (Groups.partition_id == partition.id)
+#         )
+#     ).join(
+#         Task, on=Labels.task_id == Task.id
+#     ).join(
+#         Sequence, on=Labels.sequence_id == Sequence.id
+#     ).where(
+#         Labels.task == task
+#     ).dicts()
+#
+#     rows = [row for row in query]
+#     for row in rows:
+#         row[-1] = np.asarray(row[-1])
+#
+#     df = pd.DataFrame(
+#         [row[1:] for row in rows],
+#         index=[row[0] for row in rows],
+#         columns=('sequence', 'group', 'i', 'y')
+#     )
+#     df.index.name = 'id'
+#
+#     return df
 
 
-def load_training_data_x(feature_union_id):
-    # Load base data
+# def labeload_training_data_x(feature_union_id):
+#     # Load base data
+#     feature_union = FeatureUnion.get(FeatureUnion.id == feature_union_id)
+#     function_ids = feature_union.function_ids
+#     task = feature_union.task
+#
+#     # The main query and its join
+#     query = Labels.select(
+#         Labels.id,
+#         Features.function_id,
+#         Features.x,
+#     ).join(
+#         Features,
+#         on=(
+#             (Features.label_id == Labels.id) &
+#             (Features.function_id << function_ids)
+#         )
+#     ).where(
+#         Labels.task == task
+#     ).dicts()
+#
+#     data = []
+#     for label_id, group in groupby(query, lambda dd: dd['id']):
+#         print {'{}_{}'.format(element['function'], kk): vv
+#                 for element in group for kk, vv in element['x'].iteritems()}
+#         break
+#
+#     return df
+
+
+def _load_training_data(dataset_id, partition_id, feature_union_id):
+    '''
+    SELECT
+          s.name                      sequence_id,
+          l.i                         i,
+          f.function_configuration_id function_id,
+          g.key                       group_key,
+          f.x                         x,
+          l.y                         y
+        FROM datasets d
+          JOIN tasks t ON t.dataset_id = d.id
+          JOIN sequences s ON s.dataset_id = d.id
+          JOIN labels l ON (l.task_id = t.id AND
+                            l.sequence_id = s.id)
+          JOIN features f ON f.label_id = l.id
+          JOIN partitions p ON p.task_id = t.id
+          JOIN groups g ON (g.partition_id = p.id AND
+                            g.label_id = l.id)
+        WHERE
+          d.id = 1 AND
+          p.id = 1 AND
+          f.function_configuration_id IN (SELECT unnest(function_ids)
+                                          FROM feature_unions
+                                          WHERE id = 1)
+        ORDER BY
+          s.id,
+          l.i,
+          f.function_configuration_id;
+  
+    :param dataset_id:
+    :param partition_id:
+    :param feature_union_id:
+    :return:
+    '''
     feature_union = FeatureUnion.get(FeatureUnion.id == feature_union_id)
     function_ids = feature_union.function_ids
-    task = feature_union.task
     
-    # The main query and its join
-    query = Labels.select(
-        Labels.id,
-        Features.x
+    query = Dataset.select(
+        Labels.id.alias('label_id'),
+        Sequence.name.alias('sequence'),
+        Labels.i.alias('i'),
+        Function.name.alias('function_name'),
+        Groups.key.alias('group'),
+        Features.x.alias('x'),
+        Labels.y.alias('y')
     ).join(
-        Features,
-        on=(
-            (Features.label_id == Labels.id) &
-            (Features.function_id << function_ids)
-        )
+        Task, on=Task.dataset == Dataset.id
+    ).join(
+        Sequence, on=Sequence.dataset == Dataset.id
+    ).join(
+        Labels, on=((Labels.task == Task.id) &
+                    (Labels.sequence == Sequence.id))
+    ).join(
+        Features, on=Features.label == Labels.id
+    ).join(
+        Partition, on=Partition.task == Task.id
+    ).join(
+        Groups, on=((Groups.partition == Partition.id) &
+                    (Groups.label == Labels.id))
+    ).join(
+        FunctionConfiguration, on=Features.function_configuration_id == FunctionConfiguration.id
+    ).join(
+        Function, on=FunctionConfiguration.function == Function.id
     ).where(
-        Labels.task == task
-    ).tuples()
+        Dataset.id == dataset_id,
+        Partition.id == partition_id,
+        (Features.function_configuration << function_ids)
+    ).order_by(
+        Sequence.id,
+        Labels.i,
+        Features.function_configuration
+    ).dicts()
     
-    # Perform length test on data
-    rows = [list(row) for row in query]
-    num_functions = len(function_ids)
-    # for fid in xrange(num_functions):
-    #     assert len(set([len(row[1]) for row in rows[fid::num_functions]])) == 1
-    assert len(rows) % num_functions == 0
-    for ii in xrange(0, len(rows), num_functions):
-        for jj in xrange(ii + 1, ii + num_functions):
-            rows[ii][1].extend(rows[jj][1])
-        rows[ii][1] = np.asarray(rows[ii][1])
-    rows = rows[::num_functions]
-    assert len(set([len(row[1]) for row in rows])) == 1
+    return query
+
+
+# def load_training_data(connection, task, partition_name, feature_union_id):
+def load_training_data(connection, task_name, partition_name, feature_union_name):
+    task = connection.tasks[task_name]
+    partition = connection.partitions[task][partition_name]
+    feature_union = connection.feature_unions[task_name][feature_union_name]
     
-    # Create the data frame
-    df = pd.DataFrame(
-        [row[1:] for row in rows],
-        index=[row[0] for row in rows],
-        columns=['x']
+    rows = _load_training_data(
+        dataset_id=connection.dataset.id,
+        partition_id=partition.id,
+        feature_union_id=feature_union.id
     )
-    df.index.name = 'id'
     
-    return df
-
-
-def load_training_data(connection, task, partition_name, feature_union_id):
-    if isinstance(feature_union_id, (str, unicode)):
-        feature_union = FeatureUnion.get(
-            FeatureUnion.task == task,
-            FeatureUnion.name == feature_union_id
-        )
-        feature_union_id = feature_union.id
-    
-    else:
-        feature_union = FeatureUnion.get(
-            FeatureUnion.id == feature_union_id
-        )
-    
-    # Load the x and y dataframes
-    df_y = load_training_data_y(feature_union_id, partition_name)
-    df_x = load_training_data_x(feature_union_id)
-    
-    assert (df_x.index == df_y.index).all()
-    df = pd.concat([df_x, df_y], axis=1)
-    df = df[['sequence', 'group', 't', 'x', 'y']]
-    
-    return feature_union, task, df
+    return rows

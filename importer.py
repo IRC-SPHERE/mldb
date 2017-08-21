@@ -4,12 +4,30 @@ import json
 from meta import Metadata
 from models import *
 
-from utils import get_or_create
+from utils import get_or_create, insert_data, insert_labels
+
+
+class BaseSplit(object):
+    def __init__(self, splits):
+        self.splits = splits
+    
+    @property
+    def num_splits(self):
+        return len(self.splits)
+    
+    def __iter__(self):
+        return iter(self.splits)
+    
+    def __call__(self, ll):
+        raise NotImplementedError
 
 
 class Importer(object):
-    def __init__(self, connection_path, meta_path):
-        self.connection_params = json.load(open(connection_path, 'r'))
+    def __init__(self, connection, meta):
+        if isinstance(connection, dict):
+            self.connection_params = connection
+        else:
+            self.connection_params = json.load(open(connection, 'r'))
         
         db.init(
             self.connection_params['database'],
@@ -18,7 +36,7 @@ class Importer(object):
         db.create_tables(all_tables, safe=True)
         
         self.db = db
-        self.meta = Metadata(meta_path)
+        self.meta = Metadata(meta)
         
         # Load the dataset object
         self.dataset, created = Dataset.get_or_create(
@@ -49,10 +67,7 @@ class Importer(object):
                     dataset=self.dataset,
                     name=view['name']
                 ),
-                values=dict(
-                    columns=view['columns'],
-                    num_columns=len(view['columns'])
-                )
+                values=dict(meta=dict())
             )
         
         # Load the sequences
@@ -64,10 +79,7 @@ class Importer(object):
                     dataset=self.dataset,
                     name=sequence['name']
                 ),
-                values=dict(
-                    t_min=sequence['t_min'],
-                    t_max=sequence['t_max']
-                )
+                values=dict(meta=dict())
             )
         
         # Load the partitions
@@ -84,11 +96,11 @@ class Importer(object):
             self.splits[task_name] = ss
             self.splits[task] = ss
             
-            cc = {}
-            for classifier in task.classifiers:
-                cc[classifier.name] = classifier
-            self.classifiers[task] = cc
-            self.classifiers[task_name] = cc
+            # cc = {}
+            # for classifier in task.classifiers:
+            #     cc[classifier.name] = classifier
+            # self.classifiers[task] = cc
+            # self.classifiers[task_name] = cc
             
             ff = {}
             for feature_union in task.feature_unions:
@@ -128,12 +140,28 @@ class Importer(object):
         print ' ', 'Tasks'
         for _, task in self.itertasks():
             print ' ', ' ', task
-            self.import_labels(task=task, sequence=sequence)
+            
+            ll = self.import_labels(task=task, sequence=sequence)
+            if ll is not None:
+                insert_labels(
+                    sequence=sequence,
+                    task=task,
+                    df=ll,
+                    force=False
+                )
         
         print ' ', 'Views'
         for _, view in self.iterviews():
             print ' ', ' ', view
-            self.import_view(view=view, sequence=sequence)
+            
+            dd = self.import_view(sequence=sequence, view=view)
+            if dd is not None:
+                insert_data(
+                    sequence=sequence,
+                    view=view,
+                    df=dd,
+                    force=False
+                )
     
     """
     
@@ -145,9 +173,17 @@ class Importer(object):
     def import_labels(self, sequence, task):
         raise NotImplementedError
     
-    def register_partition(self, task, partition_name, key_func, force=False):
+    def register_partition(self, partition_generator, task=None):
+        if task is None:
+            task = Task.get(
+                Task.dataset == self.dataset,
+                Task.name == 'default'
+            )
+        
         assert isinstance(task, Task)
         
+        assert isinstance(partition_generator, BaseSplit)
+        partition_name = partition_generator.__class__.__name__
         partition = get_or_create(
             Partition,
             keys=dict(
@@ -160,32 +196,30 @@ class Importer(object):
             Labels.task == task
         )
         
-        group_query = GroupDefinition.select().where(
-            GroupDefinition.partition == partition
+        group_query = Groups.select().where(
+            Groups.partition == partition
         )
         
-        update = group_query.count() == label_query.count()
-        if update and not force:
-            return
-        
+        update = (group_query.count() == label_query.count()) and group_query.count() != 0
         if update:
-            print 'updating'
-            for label in label_query:
-                GroupDefinition.update(
-                    fold=key_func(label)
-                ).where(
-                    SplitDefinition.partition == partition,
-                    SplitDefinition.label == label
-                ).execute()
+            Groups.delete().where(
+                Groups.partition == partition
+            ).execute()
         
-        else:
-            print 'saving'
-            rows = [dict(
-                partition=partition,
-                label=label,
-                key=key_func(label)
-            ) for label in label_query]
-            GroupDefinition.insert_many(rows).execute()
+        rows = [dict(
+            partition=partition,
+            label=label,
+            key=partition_generator(label)
+        ) for label in label_query]
+        Groups.insert_many(rows).execute()
+        
+        for ii, split in enumerate(partition_generator):
+            self.register_split_definition(
+                task=task,
+                split_num=ii,
+                partition_name=partition_name,
+                split=split
+            )
     
     def register_split_definition(self, task, partition_name, split_num, split, tag=None):
         assert isinstance(split, dict)

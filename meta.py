@@ -17,12 +17,12 @@ def validate_views(meta):
         # print json.dumps(view, indent=2, sort_keys=True)
         
         assert 'name' in view
-        assert 'columns' in view
+        # assert 'columns' in view
         
         assert isinstance(view['name'], (str, unicode))
-        assert isinstance(view['columns'], list)
+        # assert isinstance(view['columns'], list)
         
-        assert len(view['columns']) > 0
+        # assert len(view['columns']) > 0
 
 
 def validate_sequences(meta):
@@ -33,12 +33,12 @@ def validate_sequences(meta):
         # print json.dumps(sequence, indent=2, sort_keys=True)
         
         assert 'name' in sequence
-        assert 't_min' in sequence
-        assert 't_max' in sequence
+        # assert 't_min' in sequence
+        # assert 't_max' in sequence
         
         assert isinstance(sequence['name'], (str, unicode))
-        assert isinstance(sequence['t_min'], (int, float))
-        assert isinstance(sequence['t_max'], (int, float))
+        # assert isinstance(sequence['t_min'], (int, float))
+        # assert isinstance(sequence['t_max'], (int, float))
 
 
 def validate_tasks(meta):
@@ -59,8 +59,9 @@ def validate_tasks(meta):
 
 
 class Metadata(object):
-    def __init__(self, filename):
-        meta = json.load(open(filename, 'r'))
+    def __init__(self, meta):
+        if not isinstance(meta, dict):
+            meta = json.load(open(meta, 'r'))
         
         validate_dataset(meta)
         validate_sequences(meta)

@@ -3,6 +3,9 @@ from playhouse.postgres_ext import *
 db = PostgresqlDatabase(None)
 
 
+# db = PostgresqlExtDatabase(None)
+
+
 class BaseModel(Model):
     class Meta:
         database = db
@@ -15,7 +18,9 @@ class BaseModel(Model):
 
 class Dataset(BaseModel):
     id = PrimaryKeyField()
+    
     name = CharField(unique=True, null=False, index=True)
+    meta = JSONField(null=True)
     
     def __repr__(self):
         return "<{} name={}>".format(
@@ -31,6 +36,68 @@ class Dataset(BaseModel):
         )
 
 
+class Classifier(BaseModel):
+    id = PrimaryKeyField()
+    
+    name = CharField(null=False, index=True, unique=True)
+    meta = JSONField(null=True)
+    
+    def __repr__(self):
+        return "<{} name={}>".format(
+            self.__class__.__name__,
+            self.name,
+        )
+    
+    class Meta:
+        db_table = 'classifiers'
+        
+        order_by = (
+            'name',
+        )
+
+
+class Function(BaseModel):
+    id = PrimaryKeyField()
+    
+    name = CharField(null=False, index=True, unique=True)
+    meta = JSONField(null=True)
+    
+    def __repr__(self):
+        return "<{} name={} meta={}>".format(
+            self.__class__.__name__,
+            self.name,
+            self.meta
+        )
+    
+    class Meta:
+        db_table = 'functions'
+        
+        order_by = (
+            'name',
+        )
+
+
+class Metrics(BaseModel):
+    id = PrimaryKeyField()
+    
+    name = CharField(null=False, index=True, unique=True)
+    meta = JSONField(null=True)
+    
+    def __repr__(self):
+        return "<{} name={} meta={}>".format(
+            self.__class__.__name__,
+            self.name,
+            self.meta
+        )
+    
+    class Meta:
+        db_table = 'metrics'
+        
+        order_by = (
+            'name',
+        )
+
+
 """
 
 """
@@ -40,7 +107,9 @@ class Task(BaseModel):
     id = PrimaryKeyField()
     
     dataset = ForeignKeyField(Dataset, related_name='tasks', null=False, index=True, on_delete='CASCADE')
+    
     name = CharField(null=False, index=True)
+    meta = JSONField(null=True)
     
     columns = ArrayField(field_class=CharField, null=False)
     num_columns = IntegerField(null=False)
@@ -69,10 +138,9 @@ class Sequence(BaseModel):
     id = PrimaryKeyField()
     
     dataset = ForeignKeyField(Dataset, related_name='sequences', null=False, index=True, on_delete='CASCADE')
-    name = CharField(null=False, index=True)
     
-    t_min = FloatField(null=False)
-    t_max = FloatField(null=False)
+    name = CharField(null=False, index=True)
+    meta = JSONField(null=True)
     
     def __repr__(self):
         return "<{} db={} sequence={}>".format(
@@ -98,10 +166,9 @@ class View(BaseModel):
     id = PrimaryKeyField()
     
     dataset = ForeignKeyField(Dataset, related_name='views', null=False, index=True, on_delete='CASCADE')
-    name = CharField(null=False, index=True)
     
-    columns = ArrayField(field_class=CharField, null=False)
-    num_columns = IntegerField(null=False)
+    name = CharField(null=False, index=True)
+    meta = JSONField(null=True)
     
     def __repr__(self):
         return "<{} db={} view={}>".format(
@@ -128,37 +195,144 @@ class View(BaseModel):
 """
 
 
-class Classifier(BaseModel):
+class FunctionConfiguration(BaseModel):
     id = PrimaryKeyField()
     
-    task = ForeignKeyField(Task, related_name='classifiers', null=False, index=True, on_delete='CASCADE')
-    name = CharField(null=False, index=True)
+    task = ForeignKeyField(Task, null=False, index=True, on_delete='CASCADE')
+    view = ForeignKeyField(View, null=False, index=True, on_delete='CASCADE')
+    function = ForeignKeyField(Function, null=False, index=True, on_delete='CASCADE')
+    
+    left = FloatField(null=False, index=True, default=-1)
+    right = FloatField(null=False, index=True, default=0)
+    
+    meta = JSONField(null=True)
     
     def __repr__(self):
-        return "<{} {} {}>".format(
+        return "<{} name={} task={} ({}, {}]  meta={}>".format(
             self.__class__.__name__,
-            self.name,
-            self.task
+            self.function.name,
+            self.task.name,
+            self.left,
+            self.right,
+            self.meta,
         )
     
     class Meta:
-        db_table = 'classifiers'
+        db_table = 'function_configuration'
         
         order_by = (
             'task',
-            'name',
+            'view',
+            'function',
         )
         
         indexes = (
-            (('task', 'name'), True),
+            (('task', 'function', 'view',), True),
         )
+
+
+class Labels(BaseModel):
+    id = PrimaryKeyField()
+    
+    task = ForeignKeyField(Task, related_name='labels', null=False, index=True, on_delete='CASCADE')
+    sequence = ForeignKeyField(Sequence, related_name='labels', null=False, index=True, on_delete='CASCADE')
+    
+    i = FloatField(null=False)
+    y = BinaryJSONField(null=False)
+    
+    def __repr__(self):
+        return "<{} {} {} {} {}>".format(
+            self.__class__.__name__,
+            self.task.name,
+            self.sequence.name,
+            self.i,
+            self.y
+        )
+    
+    class Meta:
+        db_table = 'labels'
+        
+        order_by = (
+            'task',
+            'sequence',
+            'i'
+        )
+        
+        indexes = (
+            (('task', 'sequence', 'i'), True),
+        )
+
+
+class Data(BaseModel):
+    id = PrimaryKeyField()
+    
+    view = ForeignKeyField(View, null=False, index=True, on_delete='CASCADE')
+    sequence = ForeignKeyField(Sequence, null=False, index=True, on_delete='CASCADE')
+    
+    i = FloatField(null=False)
+    x = BinaryJSONField(null=False)
+    
+    def __repr__(self):
+        return "<{} i={} x={}>".format(
+            self.__class__.__name__,
+            self.i, self.x
+        )
+    
+    class Meta:
+        db_table = 'data'
+        
+        order_by = (
+            'view',
+            'sequence',
+            'i'
+        )
+        
+        indexes = (
+            (('view', 'sequence',), False),
+        )
+
+
+class Features(BaseModel):
+    id = PrimaryKeyField()
+    
+    function_configuration = ForeignKeyField(FunctionConfiguration, null=False, index=True, on_delete='CASCADE')
+    label = ForeignKeyField(Labels, related_name='features', null=False, index=True, on_delete='CASCADE')
+    
+    x = BinaryJSONField(FloatField, null=False)
+    
+    def __repr__(self):
+        return "<{} {} {} {}>".format(
+            self.__class__.__name__,
+            self.function_configuration,
+            self.label,
+            self.x
+        )
+    
+    class Meta:
+        db_table = 'features'
+        
+        order_by = (
+            'label',
+            'function_configuration',
+        )
+        
+        indexes = (
+            (('function_configuration', 'label'), True),
+        )
+
+
+"""
+
+"""
 
 
 class Partition(BaseModel):
     id = PrimaryKeyField()
     
     task = ForeignKeyField(Task, related_name='partitions', null=False, index=True, on_delete='CASCADE')
+    
     name = CharField(null=False, index=True)
+    meta = JSONField(null=True)
     
     def __repr__(self):
         return "<{} task={} name={}>".format(
@@ -180,44 +354,13 @@ class Partition(BaseModel):
         )
 
 
-class Function(BaseModel):
-    id = PrimaryKeyField()
-    
-    task = ForeignKeyField(Task, related_name='functions', null=False, index=True, on_delete='CASCADE')
-    name = CharField(null=False, index=True)
-    
-    left = FloatField(null=False, default=-1.0)
-    right = FloatField(null=False, default=0)
-    
-    def __repr__(self):
-        return "<{} name={} task={} window=({}, {}]>".format(
-            self.__class__.__name__,
-            self.name,
-            self.task.name,
-            self.left,
-            self.right
-        )
-    
-    class Meta:
-        db_table = 'functions'
-        
-        order_by = (
-            'task',
-            'name',
-            'right',
-            '-left'
-        )
-        
-        indexes = (
-            (('task', 'name', 'left', 'right'), True),
-        )
-
-
 class FeatureUnion(BaseModel):
     id = PrimaryKeyField()
     
     task = ForeignKeyField(Task, related_name='feature_unions', null=False, index=True, on_delete='CASCADE')
+    
     name = CharField(null=False, index=True)
+    meta = JSONField(null=True)
     
     function_ids = ArrayField(IntegerField, null=False, unique=True)
     
@@ -240,68 +383,6 @@ class FeatureUnion(BaseModel):
         indexes = (
             (('task', 'name'), True),
         )
-
-
-class Labels(BaseModel):
-    id = PrimaryKeyField()
-    
-    task = ForeignKeyField(Task, related_name='labels', null=False, index=True, on_delete='CASCADE')
-    sequence = ForeignKeyField(Sequence, related_name='labels', null=False, index=True, on_delete='CASCADE')
-    
-    t = FloatField(null=False)
-    y = ArrayField(FloatField, null=False)
-    
-    def __repr__(self):
-        return "<{} {} {} {} {}>".format(
-            self.__class__.__name__,
-            self.task.name,
-            self.sequence.name,
-            self.t,
-            self.y
-        )
-    
-    class Meta:
-        db_table = 'labels'
-        
-        order_by = (
-            'task',
-            'sequence',
-            't'
-        )
-
-
-class Data(BaseModel):
-    id = PrimaryKeyField()
-    
-    view = ForeignKeyField(View, null=False, index=True, on_delete='CASCADE')
-    sequence = ForeignKeyField(Sequence, null=False, index=True, on_delete='CASCADE')
-    
-    t = FloatField(null=False)
-    x = ArrayField(FloatField, null=False)
-    
-    def __repr__(self):
-        return "<{} {}={}>".format(
-            self.__class__.__name__,
-            self.t, self.x
-        )
-    
-    class Meta:
-        db_table = 'data'
-        
-        order_by = (
-            'view',
-            'sequence',
-            't'
-        )
-        
-        indexes = (
-            (('sequence', 'view', 't'), True),
-        )
-
-
-"""
-
-"""
 
 
 class SplitDefinition(BaseModel):
@@ -339,7 +420,7 @@ class SplitDefinition(BaseModel):
         )
 
 
-class GroupDefinition(BaseModel):
+class Groups(BaseModel):
     id = PrimaryKeyField()
     
     partition = ForeignKeyField(Partition, related_name='partitions', null=False, index=True, on_delete='CASCADE')
@@ -355,7 +436,7 @@ class GroupDefinition(BaseModel):
         )
     
     class Meta:
-        db_table = 'group_definitions'
+        db_table = 'groups'
         
         order_by = (
             'partition',
@@ -368,35 +449,6 @@ class GroupDefinition(BaseModel):
         )
 
 
-class Features(BaseModel):
-    id = PrimaryKeyField()
-    
-    function = ForeignKeyField(Function, null=False, index=True, on_delete='CASCADE')
-    label = ForeignKeyField(Labels, related_name='features', null=False, index=True, on_delete='CASCADE')
-    
-    x = ArrayField(FloatField, null=False)
-    
-    def __repr__(self):
-        return "<{} {} {} {}>".format(
-            self.__class__.__name__,
-            self.function,
-            self.label,
-            self.x
-        )
-    
-    class Meta:
-        db_table = 'features'
-        
-        order_by = (
-            'function',
-            'label',
-        )
-        
-        indexes = (
-            (('function', 'label'), True),
-        )
-
-
 """
 
 """
@@ -406,6 +458,7 @@ class PredictionConfiguration(BaseModel):
     id = PrimaryKeyField()
     
     classifier = ForeignKeyField(Classifier, null=False, index=True, on_delete='CASCADE')
+    task = ForeignKeyField(Task, related_name='tasks', null=False, index=True, on_delete='CASCADE')
     feature_union = ForeignKeyField(FeatureUnion, null=False, index=True, on_delete='CASCADE')
     split_definition = ForeignKeyField(SplitDefinition, related_name='predictions', null=False, index=True,
                                        on_delete='CASCADE')
@@ -432,14 +485,34 @@ class PredictionConfiguration(BaseModel):
         )
 
 
+class Performance(BaseModel):
+    id = PrimaryKeyField()
+    
+    metric = ForeignKeyField(Metrics, null=False, index=True, on_delete='CASCADE')
+    prediction_configuration = ForeignKeyField(PredictionConfiguration, null=False, index=True, on_delete='CASCADE')
+    result = JSONField(null=True)
+    
+    def __repr__(self):
+        return "<{} metric={} result={}>".format(
+            self.__class__.__name__,
+            self.metric.name,
+            self.result
+        )
+    
+    class Meta:
+        db_table = 'performance'
+        
+        indexes = (
+            (('metric', 'prediction_configuration',), True),
+        )
+
+
 class Prediction(BaseModel):
     id = PrimaryKeyField()
     
-    prediction_configuration = ForeignKeyField(PredictionConfiguration, related_name='predictions', null=False,
+    prediction_configuration = ForeignKeyField(PredictionConfiguration, null=False,
                                                index=True, on_delete='CASCADE')
     label = ForeignKeyField(Labels, related_name='predictions', null=False, index=True, on_delete='CASCADE')
-    
-    kind = CharField(null=True, index=True)
     
     p = ArrayField(FloatField, null=False)
     
@@ -463,9 +536,20 @@ class Prediction(BaseModel):
         )
 
 
+"""
+
+"""
+
+"""
+
+"""
+
 all_tables = [
     # Depth 0
     Dataset,
+    Classifier,
+    Function,
+    Metrics,
     
     # Depth 1
     Task,
@@ -473,19 +557,37 @@ all_tables = [
     View,
     
     # Depth 2
-    Classifier,
     Partition,
-    Function,
+    FunctionConfiguration,
     FeatureUnion,
     Labels,
     Data,
     
     # Depth 3
     SplitDefinition,
-    GroupDefinition,
+    Groups,
     Features,
     
     # Depth 4
     PredictionConfiguration,
-    Prediction
+    Prediction,
+    Performance,
 ]
+
+"""
+drop table predictions cascade;
+drop table prediction_configuration  cascade;
+drop table features cascade;
+drop table groups cascade;
+drop table split_definitions  cascade;
+drop table data cascade;
+drop table labels  cascade;
+drop table feature_unions  cascade;
+drop table functions  cascade;
+drop table partitions  cascade;
+drop table tasks cascade;
+drop table sequences cascade;
+drop table views cascade;
+drop table classifiers cascade;
+drop table datasets cascade;
+"""
