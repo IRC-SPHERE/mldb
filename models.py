@@ -575,6 +575,7 @@ all_tables = [
 ]
 
 """
+drop table performance cascade;
 drop table predictions cascade;
 drop table prediction_configuration  cascade;
 drop table features cascade;
@@ -583,6 +584,7 @@ drop table split_definitions  cascade;
 drop table data cascade;
 drop table labels  cascade;
 drop table feature_unions  cascade;
+drop table function_configuration cascade;
 drop table functions  cascade;
 drop table partitions  cascade;
 drop table tasks cascade;
@@ -590,4 +592,5 @@ drop table sequences cascade;
 drop table views cascade;
 drop table classifiers cascade;
 drop table datasets cascade;
+drop table metrics cascade;
 """

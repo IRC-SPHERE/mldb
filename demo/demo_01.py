@@ -76,38 +76,45 @@ class ExampleClassifier(DBClassifier):
 
 if __name__ == '__main__':
     ## IMPORT DATA
-    # from features import extract_features
-    # from models import FeatureUnion
-    #
-    # test = Example()
-    # test.import_all_data()
-    # test.register_partition(TrainValidationTest())
-    # func_id_1 = extract_features(connection=test, func=identity, func_name='identity_1')
-    # func_id_2 = extract_features(connection=test, func=identity, func_name='identity_2')
-    # FeatureUnion.create(task=test.tasks['default'], name='identity', function_ids=[func_id_1, func_id_2])
+    def import_data():
+        from features import extract_features
+        from models import FeatureUnion
+        
+        test = Example()
+        test.import_all_data()
+        test.register_partition(TrainValidationTest())
+        func_id_1 = extract_features(connection=test, func=identity, func_name='identity_1')
+        func_id_2 = extract_features(connection=test, func=identity, func_name='identity_2')
+        FeatureUnion.create(task=test.tasks['default'], name='identity', function_ids=[func_id_1, func_id_2])
+    
     
     ## MAKE PREDICTIONS
-    # from sklearn.pipeline import Pipeline
-    # from sklearn.feature_extraction import DictVectorizer
-    # from sklearn.linear_model import LogisticRegressionCV
-    #
-    # model = Pipeline([
-    #         ('vectorizer', DictVectorizer()),
-    #         ('logistic_regression', LogisticRegressionCV())
-    #     ])
-    #
-    # clf = ExampleClassifier()
-    # clf.fit(model)
+    def learn_model():
+        from sklearn.pipeline import Pipeline
+        from sklearn.feature_extraction import DictVectorizer
+        from sklearn.linear_model import LogisticRegressionCV
+        
+        model = Pipeline([
+            ('vectorizer', DictVectorizer()),
+            ('logistic_regression', LogisticRegressionCV())
+        ])
+        
+        clf = ExampleClassifier()
+        clf.fit(model)
+    
     
     ## EVALUATE PERFORMANCE
-    from performance import evaluate_performance
+    def evaluate_performance():
+        def accuracy(y, p):
+            return np.mean(np.argmax(p, axis=1) == y)
+        
+        from performance import evaluate_performance
+        evaluate_performance(
+            connection=Example(),
+            func=accuracy
+        )
     
     
-    def accuracy(y, p):
-        return np.mean(np.argmax(p, axis=1) == y)
-    
-    
-    evaluate_performance(
-        connection=Example(),
-        func=accuracy
-    )
+    import_data()
+    learn_model()
+    evaluate_performance()
